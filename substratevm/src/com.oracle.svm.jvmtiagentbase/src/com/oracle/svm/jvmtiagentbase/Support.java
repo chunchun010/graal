@@ -186,7 +186,13 @@ public final class Support {
 
     public static String getClassNameOr(JNIEnvironment env, JNIObjectHandle clazz, String forNullHandle, String forNullNameOrException) {
         if (clazz.notEqual(nullHandle())) {
-            JNIObjectHandle clazzName = callObjectMethod(env, clazz, JvmtiAgentBase.singleton().handles().javaLangClassGetName);
+            /*
+             * To avoid outputting the names of proxies (which are unique to a program execution) in
+             * the configuration, we return the name of the interface they implement instead.
+             */
+            JNIObjectHandle singleProxyInterface = JvmtiAgentBase.singleton().handles().getSingleProxyInterface(env, clazz);
+            JNIObjectHandle clazzNameProvider = singleProxyInterface.notEqual(nullHandle()) ? singleProxyInterface : clazz;
+            JNIObjectHandle clazzName = callObjectMethod(env, clazzNameProvider, JvmtiAgentBase.singleton().handles().javaLangClassGetName);
             String result = Support.fromJniString(env, clazzName);
             if (result == null || clearException(env)) {
                 result = forNullNameOrException;
@@ -367,6 +373,12 @@ public final class Support {
         args.addressOf(0).setObject(l0);
         args.addressOf(1).setObject(l1);
         jniFunctions().getCallStaticVoidMethodA().invoke(env, clazz, method, args);
+    }
+
+    public static boolean callStaticBooleanMethodL(JNIEnvironment env, JNIObjectHandle clazz, JNIMethodId method, JNIObjectHandle l0) {
+        JNIValue args = StackValue.get(1, JNIValue.class);
+        args.addressOf(0).setObject(l0);
+        return jniFunctions().getCallStaticBooleanMethodA().invoke(env, clazz, method, args);
     }
 
     public static boolean callBooleanMethod(JNIEnvironment env, JNIObjectHandle obj, JNIMethodId method) {

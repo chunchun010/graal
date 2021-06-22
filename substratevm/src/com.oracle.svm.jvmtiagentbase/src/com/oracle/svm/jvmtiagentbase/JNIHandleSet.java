@@ -59,13 +59,29 @@ public abstract class JNIHandleSet {
     private boolean destroyed = false;
 
     final JNIMethodId javaLangClassGetName;
+    final JNIMethodId javaLangClassGetInterfaces;
+
+    private JNIObjectHandle javaLangReflectProxy = WordFactory.nullPointer();
+    private JNIMethodId javaLangReflectProxyIsProxyClass = WordFactory.nullPointer();
 
     public JNIHandleSet(JNIEnvironment env) {
         JNIObjectHandle javaLangClass = findClass(env, "java/lang/Class");
-        try (CTypeConversion.CCharPointerHolder name = Support.toCString("getName"); CTypeConversion.CCharPointerHolder signature = Support.toCString("()Ljava/lang/String;")) {
-            javaLangClassGetName = Support.jniFunctions().getGetMethodID().invoke(env, javaLangClass, name.get(), signature.get());
-            guarantee(javaLangClassGetName.isNonNull());
+        javaLangClassGetName = getMethodId(env, javaLangClass, "getName", "()Ljava/lang/String;", false);
+        javaLangClassGetInterfaces = getMethodId(env, javaLangClass, "getInterfaces", "()[Ljava/lang/Class;", false);
+    }
+
+    JNIObjectHandle getJavaLangReflectProxy(JNIEnvironment env) {
+        if (javaLangReflectProxy.equal(nullHandle())) {
+            javaLangReflectProxy = newClassGlobalRef(env, "java/lang/reflect/Proxy");
         }
+        return javaLangReflectProxy;
+    }
+
+    JNIMethodId getJavaLangReflectProxyIsProxyClass(JNIEnvironment env) {
+        if (javaLangReflectProxyIsProxyClass.equal(nullHandle())) {
+            javaLangReflectProxyIsProxyClass = getMethodId(env, getJavaLangReflectProxy(env), "isProxyClass", "(Ljava/lang/Class;)Z", true);
+        }
+        return javaLangReflectProxyIsProxyClass;
     }
 
     /** {@link #findClassOptional}, but the class must exist. If not found, the VM terminates. */
@@ -211,6 +227,39 @@ public abstract class JNIHandleSet {
         JNIObjectHandle[] copy = new JNIObjectHandle[newLength];
         System.arraycopy(original, 0, copy, 0, Math.min(original.length, newLength));
         return copy;
+    }
+
+    /**
+     * If the given class is a proxy implementing a single interface, returns this interface. This
+     * prevents classes with arbitrary names from being exposed outside the agent, since those names
+     * only make sense within a single execution of the program.
+     *
+     * @param env JNI environment of the thread running the JVMTI callback.
+     * @param clazz Handle to the class.
+     * @return The interface, or a null handle if the class is not a proxy or implements multiple
+     *         interfaces.
+     */
+    public JNIObjectHandle getSingleProxyInterface(JNIEnvironment env, JNIObjectHandle clazz) {
+        boolean isProxy = Support.callStaticBooleanMethodL(env, getJavaLangReflectProxy(env), getJavaLangReflectProxyIsProxyClass(env), clazz);
+        if (Support.clearException(env) || !isProxy) {
+            return nullHandle();
+        }
+
+        JNIObjectHandle interfaces = Support.callObjectMethod(env, clazz, javaLangClassGetInterfaces);
+        if (Support.clearException(env) || interfaces.equal(nullHandle())) {
+            return nullHandle();
+        }
+
+        int interfacesLength = Support.jniFunctions().getGetArrayLength().invoke(env, interfaces);
+        guarantee(!Support.clearException(env));
+        if (interfacesLength != 1) {
+            return nullHandle();
+        }
+
+        JNIObjectHandle iface = Support.jniFunctions().getGetObjectArrayElement().invoke(env, interfaces, 0);
+        guarantee(!Support.clearException(env) && iface.notEqual(nullHandle()));
+
+        return iface;
     }
 
     /**
