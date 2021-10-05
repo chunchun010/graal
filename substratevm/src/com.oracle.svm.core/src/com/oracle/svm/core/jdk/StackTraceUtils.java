@@ -26,7 +26,6 @@ package com.oracle.svm.core.jdk;
 
 import java.security.AccessControlContext;
 import java.security.AccessController;
-import java.security.Permissions;
 import java.security.ProtectionDomain;
 import java.util.ArrayList;
 
@@ -39,8 +38,6 @@ import com.oracle.svm.core.SubstrateOptions;
 import com.oracle.svm.core.SubstrateUtil;
 import com.oracle.svm.core.annotate.NeverInline;
 import com.oracle.svm.core.code.FrameInfoQueryResult;
-import com.oracle.svm.core.graal.snippets.CEntryPointSnippets;
-import com.oracle.svm.core.jdk.AccessControllerUtil.PrivilegedStack;
 import com.oracle.svm.core.snippets.KnownIntrinsics;
 import com.oracle.svm.core.stack.JavaStackFrameVisitor;
 import com.oracle.svm.core.stack.JavaStackWalker;
@@ -50,10 +47,6 @@ import com.oracle.svm.core.thread.Target_java_lang_Continuation;
 import jdk.vm.ci.meta.MetaAccessProvider;
 import jdk.vm.ci.meta.ResolvedJavaMethod;
 import jdk.vm.ci.meta.ResolvedJavaType;
-
-// Checkstyle: stop
-import sun.security.util.SecurityConstants;
-// Checkstyle: resume
 
 public class StackTraceUtils {
 
@@ -372,12 +365,8 @@ class StackAccessControlContextVisitor extends JavaStackFrameVisitor {
     }
 
     @NeverInline("Starting a stack walk in the caller frame")
+    @SuppressWarnings({"deprecation"}) // deprecated starting JDK 17
     public static AccessControlContext getFromStack() {
-        if (!CEntryPointSnippets.isIsolateInitialized()) {
-            Permissions perms = new Permissions();
-            perms.add(SecurityConstants.ALL_PERMISSION);
-            return new AccessControlContext(new ProtectionDomain[]{new ProtectionDomain(null, perms)});
-        }
         StackAccessControlContextVisitor visitor = new StackAccessControlContextVisitor();
         JavaStackWalker.walkCurrentThread(KnownIntrinsics.readCallerStackPointer(), visitor);
         Target_java_security_AccessControlContext wrapper;

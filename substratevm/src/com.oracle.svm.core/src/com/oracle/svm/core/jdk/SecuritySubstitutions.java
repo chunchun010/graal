@@ -34,31 +34,17 @@ import java.security.PermissionCollection;
 import java.security.Permissions;
 import java.security.Policy;
 import java.security.PrivilegedAction;
-import java.security.PrivilegedActionException;
 import java.security.PrivilegedExceptionAction;
 import java.security.ProtectionDomain;
 import java.security.Provider;
 import java.security.SecureRandom;
-import java.util.ArrayDeque;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
-import java.util.Objects;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Predicate;
 
-import jdk.vm.ci.meta.MetaAccessProvider;
-import jdk.vm.ci.meta.ResolvedJavaField;
-import org.graalvm.collections.Pair;
-import org.graalvm.compiler.serviceprovider.JavaVersionUtil;
-import org.graalvm.nativeimage.Platform;
-import org.graalvm.nativeimage.Platforms;
-import org.graalvm.nativeimage.hosted.Feature;
-import org.graalvm.word.Pointer;
-
 import com.oracle.svm.core.SubstrateUtil;
 import com.oracle.svm.core.annotate.Alias;
-import com.oracle.svm.core.annotate.AutomaticFeature;
 import com.oracle.svm.core.annotate.Delete;
 import com.oracle.svm.core.annotate.InjectAccessors;
 import com.oracle.svm.core.annotate.NeverInline;
@@ -66,14 +52,19 @@ import com.oracle.svm.core.annotate.RecomputeFieldValue;
 import com.oracle.svm.core.annotate.Substitute;
 import com.oracle.svm.core.annotate.TargetClass;
 import com.oracle.svm.core.annotate.TargetElement;
+import com.oracle.svm.core.graal.snippets.CEntryPointSnippets;
 import com.oracle.svm.core.thread.Target_java_lang_Thread;
-import com.oracle.svm.core.threadlocal.FastThreadLocalFactory;
-import com.oracle.svm.core.threadlocal.FastThreadLocalObject;
 import com.oracle.svm.core.util.VMError;
-import com.oracle.svm.util.ReflectionUtil;
+import jdk.vm.ci.meta.MetaAccessProvider;
+import jdk.vm.ci.meta.ResolvedJavaField;
+import org.graalvm.compiler.serviceprovider.JavaVersionUtil;
+import org.graalvm.nativeimage.Platform;
+import org.graalvm.nativeimage.Platforms;
+import org.graalvm.word.Pointer;
 
 // Checkstyle: stop
 import sun.security.jca.ProviderList;
+import sun.security.util.Debug;
 import sun.security.util.SecurityConstants;
 // Checkstyle: resume
 
@@ -117,7 +108,19 @@ final class Target_java_security_AccessController {
     }
 
     @Substitute
+    @SuppressWarnings("deprecation")
     static AccessControlContext getStackAccessControlContext() {
+        if (!CEntryPointSnippets.isIsolateInitialized()) {
+            /*
+             * If isolate still isn't initialized, we can assume that we are so early in the JDK
+             * initialization that any attempt at stalk walk will fail as not even the basic
+             * PrintWriter/Logging is available yet. This manifested when
+             * UseDedicatedVMOperationThread hosted option was set, triggering a runtime crash.
+             */
+            Permissions perms = new Permissions();
+            perms.add(SecurityConstants.ALL_PERMISSION);
+            return new AccessControlContext(new ProtectionDomain[]{new ProtectionDomain(null, perms)});
+        }
         return StackAccessControlContextVisitor.getFromStack();
     }
 
@@ -134,217 +137,79 @@ final class Target_java_security_AccessController {
 
     @Substitute
     @TargetElement(onlyWith = JDK17OrLater.class)
+    @SuppressWarnings("deprecation") // deprecated starting JDK 17
     static <T> T executePrivileged(PrivilegedExceptionAction<T> action, AccessControlContext context, Class<?> caller) throws Throwable {
         if (action == null) {
             throw new NullPointerException("Null action");
         }
 
-        if (context != null && context.equals(AccessControllerUtil.NO_CONTEXT_SINGLETON)) {
-            VMError.shouldNotReachHere("Invoked AccessControlContext was replaced at build time but wasn't reinitialized at run time.");
-        }
-
-        AccessControllerUtil.PrivilegedStack.push(context, caller);
+        PrivilegedStack.push(context, caller);
         try {
             return action.run();
         } catch (Exception e) {
             throw AccessControllerUtil.wrapCheckedExceptionForPrivilegedAction(e);
         } finally {
-            AccessControllerUtil.PrivilegedStack.pop();
+            PrivilegedStack.pop();
         }
     }
 
     @Substitute
     @TargetElement(onlyWith = JDK17OrLater.class)
+    @SuppressWarnings("deprecation") // deprecated starting JDK 17
     static <T> T executePrivileged(PrivilegedAction<T> action, AccessControlContext context, Class<?> caller) throws Throwable {
         if (action == null) {
             throw new NullPointerException("Null action");
         }
 
-        if (context != null && context.equals(AccessControllerUtil.NO_CONTEXT_SINGLETON)) {
-            VMError.shouldNotReachHere("Invoked AccessControlContext was replaced at build time but wasn't reinitialized at run time.\n" +
-                            "This might be an indicator of improper build time initialization, or of a non-compatible JDK version.");
-        }
-
-        AccessControllerUtil.PrivilegedStack.push(context, caller);
+        PrivilegedStack.push(context, caller);
         try {
             return action.run();
         } catch (Exception e) {
             throw AccessControllerUtil.wrapCheckedExceptionForPrivilegedAction(e);
         } finally {
-            AccessControllerUtil.PrivilegedStack.pop();
+            PrivilegedStack.pop();
         }
     }
 
     @Substitute
     @TargetElement(onlyWith = JDK17OrLater.class)
-    @SuppressWarnings("unused")
+    @SuppressWarnings({"unused", "deprecation"})
     static AccessControlContext checkContext(AccessControlContext context, Class<?> caller) {
+
+        if (context != null && context.equals(AccessControllerUtil.DISALLOWED_CONTEXT_MARKER)) {
+            VMError.shouldNotReachHere("Non-allowed AccessControlContext that was replaced with a blank one at build time was invoked without being reinitialized at run time.\n" +
+                            "This might be an indicator of improper build time initialization, or of a non-compatible JDK version.\n" +
+                            "In order to fix this you can either:\n" +
+                            "    * Annotate the offending context's field with @RecomputeFieldValue\n" +
+                            "    * Implement a custom runtime accessor and annotate said field with @InjectAccessors\n" +
+                            "    * If this context originates from the JDK, and it doesn't leak sensitive info, you can allow it in 'AccessControlContextReplacerFeature.duringSetup'");
+        }
+
         // check if caller is authorized to create context
         if (System.getSecurityManager() != null) {
-            throw VMError.shouldNotReachHere("Needs to be implemented when SecurityManager is supported");
+            throw VMError.unsupportedFeature("SecurityManager isn't supported");
         }
         return context;
-    }
-}
-
-@InternalVMMethod
-@SuppressWarnings("unused")
-class AccessControllerUtil {
-
-    static final AccessControlContext NO_CONTEXT_SINGLETON;
-
-    static {
-        try {
-            NO_CONTEXT_SINGLETON = ReflectionUtil.lookupConstructor(AccessControlContext.class, ProtectionDomain[].class, boolean.class).newInstance(new ProtectionDomain[0], true);
-        } catch (ReflectiveOperationException ex) {
-            throw VMError.shouldNotReachHere(ex);
-        }
-    }
-
-    public static class PrivilegedStack {
-
-        public static class StackElement {
-            protected AccessControlContext context;
-            protected Class<?> caller;
-
-            StackElement(AccessControlContext context, Class<?> caller) {
-                this.context = context;
-                this.caller = caller;
-            }
-
-            public AccessControlContext getContext() {
-                return context;
-            }
-
-            public Class<?> getCaller() {
-                return caller;
-            }
-        }
-
-        @SuppressWarnings("rawtypes") private static final FastThreadLocalObject<ArrayDeque> stack = FastThreadLocalFactory.createObject(ArrayDeque.class, "accStack");
-
-        @SuppressWarnings("unchecked")
-        private static ArrayDeque<StackElement> getStack() {
-            ArrayDeque<StackElement> tmp = stack.get();
-            if (tmp == null) {
-                tmp = new ArrayDeque<>();
-                stack.set(tmp);
-            }
-            return tmp;
-        }
-
-        public static void push(AccessControlContext context, Class<?> caller) {
-            getStack().push(new StackElement(context, caller));
-        }
-
-        public static void pop() {
-            getStack().pop();
-        }
-
-        public static AccessControlContext peekContext() {
-            return Objects.requireNonNull(getStack().peek()).getContext();
-        }
-
-        public static Class<?> peekCaller() {
-            return Objects.requireNonNull(getStack().peek()).getCaller();
-        }
-
-        public static int length() {
-            return getStack().size();
-        }
-    }
-
-    static Throwable wrapCheckedException(Throwable ex) {
-        if (ex instanceof Exception && !(ex instanceof RuntimeException)) {
-            return new PrivilegedActionException((Exception) ex);
-        } else {
-            return ex;
-        }
-    }
-
-    static Throwable wrapCheckedExceptionForPrivilegedAction(Throwable ex) {
-        if (JavaVersionUtil.JAVA_SPEC <= 11) {
-            return wrapCheckedException(ex);
-        }
-        return ex;
-    }
-}
-
-@AutomaticFeature
-@SuppressWarnings({"unused"})
-class AccessControlContextFeature implements Feature {
-
-    static List<Pair<String, AccessControlContext>> allowedContexts = new ArrayList<>();
-
-    static void allowContextIfExists(String className, String fieldName) {
-        try {
-            // Checkstyle: stop
-            Class<?> clazz = Class.forName(className);
-            // Checkstyle: resume
-            String description = className + "." + fieldName;
-            try {
-                AccessControlContext acc = ReflectionUtil.readStaticField(clazz, fieldName);
-                allowedContexts.add(Pair.create(description, acc));
-            } catch (ReflectionUtil.ReflectionUtilError e) {
-                VMError.shouldNotReachHere("Following field isn't present in JDK" + JavaVersionUtil.JAVA_SPEC + ": " + description);
-            }
-
-        } catch (ReflectiveOperationException e) {
-            VMError.shouldNotReachHere("Following class isn't present in JDK" + JavaVersionUtil.JAVA_SPEC + ": " + className);
-        }
-    }
-
-    @Override
-    public void duringSetup(DuringSetupAccess access) {
-        // Following AccessControlContexts are allowed in the image heap since they cannot leak
-        // sensitive information.
-        // They mostly originate from JDK's static final fields, and they do not feature
-        // CodeSources, DomainCombiners etc.
-        // New JDK versions can feature new or remove old contexts, so this method should be kept
-        // up-to-date.
-        allowContextIfExists("java.util.Calendar$CalendarAccessControlContext", "INSTANCE");
-        allowContextIfExists("javax.management.monitor.Monitor", "noPermissionsACC");
-
-        if (JavaVersionUtil.JAVA_SPEC < 9) {
-            allowContextIfExists("sun.misc.InnocuousThread", "ACC");
-        }
-        if (JavaVersionUtil.JAVA_SPEC >= 9) {
-            allowContextIfExists("java.security.AccessController$AccHolder", "innocuousAcc");
-            allowContextIfExists("java.util.concurrent.ForkJoinPool$DefaultForkJoinWorkerThreadFactory", "ACC");
-        }
-        if (JavaVersionUtil.JAVA_SPEC < 17) {
-            allowContextIfExists("java.util.concurrent.ForkJoinWorkerThread", "INNOCUOUS_ACC");
-        }
-        if (JavaVersionUtil.JAVA_SPEC >= 9 && JavaVersionUtil.JAVA_SPEC < 17) {
-            allowContextIfExists("java.util.concurrent.ForkJoinPool$InnocuousForkJoinWorkerThreadFactory", "ACC");
-        }
-        if (JavaVersionUtil.JAVA_SPEC >= 17) {
-            allowContextIfExists("java.util.concurrent.ForkJoinPool$WorkQueue", "INNOCUOUS_ACC");
-            allowContextIfExists("java.util.concurrent.ForkJoinPool$DefaultCommonPoolForkJoinWorkerThreadFactory", "ACC");
-        }
-        access.registerObjectReplacer(AccessControlContextFeature::replaceAccessControlContext);
-    }
-
-    private static Object replaceAccessControlContext(Object obj) {
-        if (obj instanceof AccessControlContext && obj != AccessControllerUtil.NO_CONTEXT_SINGLETON) {
-            if (allowedContexts.stream().anyMatch((e) -> obj.equals(e.getRight()))) {
-                return obj;
-            } else {
-                return AccessControllerUtil.NO_CONTEXT_SINGLETON;
-            }
-        }
-        return obj;
     }
 }
 
 @TargetClass(java.security.AccessControlContext.class)
 @SuppressWarnings({"unused"})
 final class Target_java_security_AccessControlContext {
-    @Alias protected boolean isPrivileged;
-    @Alias protected boolean isAuthorized;
+    @Alias public boolean isPrivileged;
+    @Alias public boolean isAuthorized;
 
     @Alias
     Target_java_security_AccessControlContext(ProtectionDomain[] context, AccessControlContext privilegedContext) {
+    }
+
+    @Substitute
+    static Debug getDebug() {
+        /*
+         * We want to prevent Debug class from being reachable, as this method would return null
+         * anyways
+         */
+        return null;
     }
 }
 

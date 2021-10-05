@@ -139,6 +139,8 @@ final class Target_java_net_URLClassLoader {
 
 @SuppressWarnings("unused")
 class URLClassLoaderAccAccessor {
+
+    @SuppressWarnings({"deprecation"}) // AccessControlContext is deprecated starting JDK 17
     static AccessControlContext getAcc(Target_java_net_URLClassLoader that) {
         if (that.injectedAcc == null) {
             that.injectedAcc = new AccessControlContext(

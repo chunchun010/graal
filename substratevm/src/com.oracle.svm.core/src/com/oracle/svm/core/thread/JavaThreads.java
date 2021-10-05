@@ -701,6 +701,7 @@ public abstract class JavaThreads {
      * <li>Not implemented: inheritableThreadLocals.</li>
      * </ul>
      */
+    @SuppressWarnings({"deprecation"}) // AccessController is deprecated starting JDK 17
     static void initializeNewThread(
                     Target_java_lang_Thread tjlt,
                     ThreadGroup groupArg,
