@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012, 2020, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2012, 2021, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -204,6 +204,11 @@ public final class DynamicHub implements JavaKind.FormatWithToString, AnnotatedE
     private static final int DECLARES_DEFAULT_METHODS_FLAG_BIT = 5;
 
     /**
+     * Is this a sealed Class.
+     */
+    private static final int IS_SEALED_FLAG_BIT = 6;
+
+    /**
      * Boolean value or exception that happened at image-build time.
      */
     private Object isLocalClass;
@@ -285,6 +290,12 @@ public final class DynamicHub implements JavaKind.FormatWithToString, AnnotatedE
     private Object annotationsEncoding;
 
     /**
+     * Permitted subclasses for this class. This value is created during the image build by caching
+     * Class.getPermittedSubclasses() value for usage in {@link DynamicHub#getPermittedSubclasses()}
+     */
+    private Class<?>[] permittedSubclasses;
+
+    /**
      * Metadata for running class initializers at run time. Refers to a singleton marker object for
      * classes/interfaces already initialized during image generation, i.e., this field is never
      * null at run time.
@@ -352,7 +363,7 @@ public final class DynamicHub implements JavaKind.FormatWithToString, AnnotatedE
 
     @Platforms(Platform.HOSTED_ONLY.class)
     public DynamicHub(Class<?> hostedJavaClass, String name, HubType hubType, ReferenceType referenceType, Object isLocalClass, Object isAnonymousClass, DynamicHub superType, DynamicHub componentHub,
-                    String sourceFileName, int modifiers, ClassLoader classLoader, boolean isHidden, boolean isRecord, Class<?> nestHost, boolean assertionStatus) {
+                    String sourceFileName, int modifiers, ClassLoader classLoader, boolean isHidden, boolean isRecord, boolean isSealed, Class<?> nestHost, boolean assertionStatus) {
         this.hostedJavaClass = hostedJavaClass;
         this.name = name;
         this.hubType = hubType.getValue();
@@ -366,6 +377,7 @@ public final class DynamicHub implements JavaKind.FormatWithToString, AnnotatedE
         this.classLoader = PredefinedClassesSupport.isPredefined(hostedJavaClass) ? NO_CLASS_LOADER : classLoader;
         setFlag(IS_HIDDED_FLAG_BIT, isHidden);
         setFlag(IS_RECORD_FLAG_BIT, isRecord);
+        setFlag(IS_SEALED_FLAG_BIT, isSealed);
         this.nestHost = nestHost;
         setFlag(ASSERTION_STATUS_FLAG_BIT, assertionStatus);
     }
@@ -470,6 +482,11 @@ public final class DynamicHub implements JavaKind.FormatWithToString, AnnotatedE
     @Platforms(Platform.HOSTED_ONLY.class)
     public Object getAnnotationsEncoding() {
         return annotationsEncoding;
+    }
+
+    @Platforms(Platform.HOSTED_ONLY.class)
+    public void setPermittedSubclasses(Class<?>[] permittedSubclasses) {
+        this.permittedSubclasses = permittedSubclasses;
     }
 
     @Platforms(Platform.HOSTED_ONLY.class)
@@ -815,6 +832,12 @@ public final class DynamicHub implements JavaKind.FormatWithToString, AnnotatedE
     @TargetElement(onlyWith = JDK17OrLater.class)
     public boolean isRecord() {
         return isFlagSet(IS_RECORD_FLAG_BIT);
+    }
+
+    @Substitute
+    @TargetElement(onlyWith = JDK17OrLater.class)
+    public boolean isSealed() {
+        return isFlagSet(IS_SEALED_FLAG_BIT);
     }
 
     @Substitute
@@ -1295,6 +1318,12 @@ public final class DynamicHub implements JavaKind.FormatWithToString, AnnotatedE
                             "All record component accessor methods of this record class must be included in the reflection configuration at image build time, then this method can be called.");
         }
         return (Target_java_lang_reflect_RecordComponent[]) result;
+    }
+
+    @Substitute
+    @TargetElement(onlyWith = JDK17OrLater.class)
+    private Class<?>[] getPermittedSubclasses() {
+        return permittedSubclasses;
     }
 
     @Substitute

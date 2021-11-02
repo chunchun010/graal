@@ -43,6 +43,7 @@ import com.oracle.graal.pointsto.meta.AnalysisUniverse;
 import com.oracle.svm.core.hub.AnnotatedSuperInfo;
 import com.oracle.svm.core.hub.DynamicHub;
 import com.oracle.svm.core.hub.GenericInfo;
+import com.oracle.svm.core.jdk.SealedClassSupport;
 import com.oracle.svm.core.meta.SubstrateObjectConstant;
 import com.oracle.svm.hosted.SVMHost;
 
@@ -102,6 +103,11 @@ public class DynamicHubInitializer {
             if (hub.getInterfacesEncoding() == null) {
                 fillInterfaces(type, hub);
             }
+
+            /*
+             * Support for permitted subclasses of a sealed class.
+             */
+            hub.setPermittedSubclasses(SealedClassSupport.singleton().getPermittedSubclasses(type.getJavaClass()));
 
             /*
              * Support for Java annotations.
