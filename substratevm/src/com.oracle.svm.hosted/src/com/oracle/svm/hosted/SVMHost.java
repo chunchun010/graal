@@ -60,7 +60,9 @@ import org.graalvm.compiler.nodes.java.AccessFieldNode;
 import org.graalvm.compiler.options.Option;
 import org.graalvm.compiler.options.OptionValues;
 import org.graalvm.compiler.phases.OptimisticOptimizations;
+import org.graalvm.compiler.phases.common.CanonicalizerPhase;
 import org.graalvm.compiler.serviceprovider.JavaVersionUtil;
+import org.graalvm.compiler.virtual.phases.ea.PartialEscapePhase;
 import org.graalvm.nativeimage.Platform;
 import org.graalvm.nativeimage.Platforms;
 import org.graalvm.nativeimage.c.function.RelocatedPointer;
@@ -549,13 +551,18 @@ public class SVMHost implements HostVM {
             graph.setGuardsStage(StructuredGraph.GuardsStage.FIXED_DEOPTS);
 
             if (parseOnce) {
-                new ImplicitAssertionsPhase().apply(graph, bb.getProviders());
+                optimizeAfterParsing(bb, graph);
             }
 
             for (BiConsumer<AnalysisMethod, StructuredGraph> methodAfterParsingHook : methodAfterParsingHooks) {
                 methodAfterParsingHook.accept(method, graph);
             }
         }
+    }
+
+    protected void optimizeAfterParsing(BigBang bb, StructuredGraph graph) {
+        new ImplicitAssertionsPhase().apply(graph, bb.getProviders());
+        new PartialEscapePhase(false, CanonicalizerPhase.create(), options).apply(graph, bb.getProviders());
     }
 
     @Override
